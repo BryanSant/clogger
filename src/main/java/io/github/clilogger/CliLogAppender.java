@@ -225,10 +225,11 @@ public class CliLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     private String formatLineCompact(ILoggingEvent event) {
         Level  level   = event.getLevel();
         String message = event.getFormattedMessage();
-        String line    = MIDDLE_DOT + " " + message;
         if (level == Level.INFO) {
-            return Clique.ink().brightGreen().on(line);
-        } else if (level == Level.WARN) {
+            return Clique.ink().brightGreen().on(MIDDLE_DOT) + " " + message;
+        }
+        String line = MIDDLE_DOT + " " + message;
+        if (level == Level.WARN) {
             return Clique.ink().brightYellow().on(line);
         } else {
             return Clique.ink().brightRed().on(line);

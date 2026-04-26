@@ -47,6 +47,7 @@ public class CliProgressBar {
 
     private final int total;
     private int current = 0;
+    private final int barWidth;
     private final ProgressBar cliqueBar;
 
     public CliProgressBar(int total) {
@@ -59,6 +60,7 @@ public class CliProgressBar {
 
     public CliProgressBar(int total, ProgressBarConfiguration config) {
         this.total = total;
+        this.barWidth = config.getLength();
         this.cliqueBar = Clique.progressBar(total, config);
     }
 
@@ -91,7 +93,9 @@ public class CliProgressBar {
 
     /** ANSI-colored bar via Clique — use with {@code CliLogAppender} / TTY output. */
     public String toAnsi() {
-        return cliqueBar.get();
+        String raw = cliqueBar.get();
+        int split = Math.min(barWidth, raw.length());
+        return Clique.ink().cyan().on(raw.substring(0, split)) + raw.substring(split);
     }
 
     /** Plain ASCII bar — safe for file appenders and redirected output. */
