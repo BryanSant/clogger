@@ -1,0 +1,10 @@
+<configuration>
+    <appender name="CLI" class="io.github.clilogger.CliLogAppender">
+        <!-- Optional: customize the timestamp format (default: HH:mm:ss.SSS) -->
+        <datePattern>HH:mm:ss.SSS</datePattern>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CLI" />
+    </root>
+</configuration>
