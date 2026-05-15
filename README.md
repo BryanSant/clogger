@@ -1,8 +1,11 @@
+![Java 25](https://img.shields.io/badge/Java-25-blue) ![Logback 1.5](https://img.shields.io/badge/Logback-1.5-green) ![MIT License](https://img.shields.io/badge/license-MIT-blue)
+<img width="850" height="310" alt="clogger" src="https://github.com/user-attachments/assets/8ac300f2-27fe-45bf-93d4-c1fc086a90d2" />
+
+
 # Clogger
 
 **Clogger — The CLI Logger.** A Logback appender for CLI and terminal applications that replaces the traditional scrolling log wall with a concise, dynamically-updating status display. Instead of flooding the terminal, Clogger keeps a small stack of recent entries per level — INFO, WARN, and ERROR — and rewrites them in place as new events arrive.
 
-![Java 25](https://img.shields.io/badge/Java-25-blue) ![Logback 1.5](https://img.shields.io/badge/Logback-1.5-green) ![MIT License](https://img.shields.io/badge/license-MIT-blue)
 
 ## How it works
 
