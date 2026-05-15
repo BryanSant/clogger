@@ -1,5 +1,5 @@
 <configuration>
-    <appender name="CLI" class="io.github.clilogger.CliLogAppender">
+    <appender name="CLI" class="io.github.clogger.CliLogAppender">
         <!-- Optional: customize the timestamp format (default: HH:mm:ss.SSS) -->
         <datePattern>HH:mm:ss.SSS</datePattern>
     </appender>

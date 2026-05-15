@@ -3,7 +3,7 @@ plugins {
     id("com.gradleup.shadow") version "9.4.1"
 }
 
-group = "io.github.clilogger"
+group = "io.github.clogger"
 version = "1.0.0-SNAPSHOT"
 
 java {
@@ -17,13 +17,12 @@ repositories {
 }
 
 dependencies {
-    implementation(files("../build/libs/clilogger-1.0.0-SNAPSHOT.jar"))
+    implementation(files("../build/libs/clogger-1.0.0-SNAPSHOT.jar"))
     implementation("ch.qos.logback:logback-classic:1.5.32")
-    implementation("io.github.kusoroadeolu:clique-core:4.0.1")
 }
 
 application {
-    mainClass = "io.github.clilogger.demo.Main"
+    mainClass = "io.github.clogger.demo.Main"
 }
 
 tasks.named<JavaExec>("run") {

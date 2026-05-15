@@ -1,1 +1,1 @@
-rootProject.name = "clilogger-demo"
+rootProject.name = "clogger-demo"

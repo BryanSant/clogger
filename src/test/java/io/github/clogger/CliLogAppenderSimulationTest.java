@@ -1,4 +1,4 @@
-package io.github.clilogger;
+package io.github.clogger;
 
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
@@ -41,40 +41,40 @@ class CliLogAppenderSimulationTest {
 
         CliProgressBar pb = new CliProgressBar(10_000);
 
-        log.info("Processing records [  1 – 500 / 10 000]  {}", pb.tick(500).toAnsi());
+        log.info("Processing records [  1 – 500 / 10 000]  {}", pb.tick(500));
         sleep();
 
-        log.info("Processing records [501 – 1000 / 10 000]  {}", pb.tick(500).toAnsi());
+        log.info("Processing records [501 – 1000 / 10 000]  {}", pb.tick(500));
         sleep();
 
-        log.info("Processing records [1001 – 2000 / 10 000] {}", pb.tick(1000).toAnsi());
+        log.info("Processing records [1001 – 2000 / 10 000] {}", pb.tick(1000));
         sleep();
 
-        log.info("Processing records [2001 – 3000 / 10 000] {}", pb.tick(1000).toAnsi());
+        log.info("Processing records [2001 – 3000 / 10 000] {}", pb.tick(1000));
         sleep();
 
-        log.info("Processing records [3001 – 4000 / 10 000] {}", pb.tick(1000).toAnsi());
+        log.info("Processing records [3001 – 4000 / 10 000] {}", pb.tick(1000));
         sleep();
 
         log.warn("Slow query detected on table 'clickstream' — took 4 312 ms (threshold: 2 000 ms)");
         sleep();
 
-        log.info("Processing records [4001 – 5000 / 10 000] {}", pb.tick(1000).toAnsi());
+        log.info("Processing records [4001 – 5000 / 10 000] {}", pb.tick(1000));
         sleep();
 
-        log.info("Processing records [5001 – 6000 / 10 000] {}", pb.tick(1000).toAnsi());
+        log.info("Processing records [5001 – 6000 / 10 000] {}", pb.tick(1000));
         sleep();
 
-        log.info("Processing records [6001 – 7000 / 10 000] {}", pb.tick(1000).toAnsi());
+        log.info("Processing records [6001 – 7000 / 10 000] {}", pb.tick(1000));
         sleep();
 
         log.error("Deserialization failed for record id=7 412: unexpected token '<' at position 0");
         sleep();
 
-        log.info("Processing records [7001 – 8000 / 10 000] {}", pb.tick(1000).toAnsi());
+        log.info("Processing records [7001 – 8000 / 10 000] {}", pb.tick(1000));
         sleep();
 
-        log.info("Processing records [8001 – 9000 / 10 000] {}", pb.tick(1000).toAnsi());
+        log.info("Processing records [8001 – 9000 / 10 000] {}", pb.tick(1000));
         sleep();
 
         // ── Phase 3: final flush and aggregation ──────────────────────────────
@@ -82,7 +82,7 @@ class CliLogAppenderSimulationTest {
         log.warn("Retry budget exhausted for batch 19 — 3 records skipped, written to DLQ");
         sleep();
 
-        log.info("Processing records [9001 – 10 000 / 10 000] {}", pb.tick(1000).toAnsi());
+        log.info("Processing records [9001 – 10 000 / 10 000] {}", pb.tick(1000));
         sleep();
 
         log.error("Stage 'aggregate-by-region' timed out after 30 s — partial results written");

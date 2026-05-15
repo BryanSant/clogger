@@ -1,11 +1,18 @@
 #!/bin/bash
-gradle clean jar
-pushd demo
-gradle clean build
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEMO_JAR="$SCRIPT_DIR/demo/build/libs/demo.jar"
+
+if [ ! -f "$DEMO_JAR" ]; then
+    echo "demo.jar not found. Building..."
+    (cd "$SCRIPT_DIR" && ./gradlew jar)
+    (cd "$SCRIPT_DIR/demo" && ./gradlew shadowJar)
+fi
+
 echo
-echo "CLILogger Demo output below:"
+echo "Clogger Demo output below:"
 echo
-java -jar build/libs/demo.jar
+java -jar "$DEMO_JAR"
 echo
 echo "Demo finished."
-popd

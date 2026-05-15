@@ -1,5 +1,5 @@
 <configuration>
-    <appender name="CLI" class="io.github.clilogger.CliLogAppender">
+    <appender name="CLI" class="io.github.clogger.CliLogAppender">
         <!-- COMPACT (default): colored middle-dot + message only.
              Switch to FULL for timestamp, thread, and level badge:
         <format>FULL</format>
