@@ -15,11 +15,9 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
 /**
  * Chronological TUI log appender — renders TRACE/DEBUG/INFO/WARN/ERROR entries
@@ -38,10 +36,12 @@ import java.util.Map;
  * <p>A {@link TuiProgressBar} passed as a log argument is anchored to its
  * deque position on first emission. Subsequent log events carrying the same
  * bar instance overwrite that entry in place — even after newer events have
- * pushed the bar's line upward. Once the bar reports {@code isDone()}, its
- * rendering is frozen so it remains a stable historical entry. If the bar's
- * anchor line scrolls off the top of the buffer, a subsequent log event
- * carrying that bar starts a fresh entry at the bottom.</p>
+ * pushed the bar's line upward. Once the bar reports {@code isDone()} its
+ * state is locked (further ticks are no-ops), so the historical line
+ * remains stable; it does continue to dim along with its neighbors as it
+ * drifts upward. If the bar's anchor line scrolls off the top of the
+ * buffer, a subsequent log event carrying that bar starts a fresh entry at
+ * the bottom.</p>
  *
  * <p>Terminal auto-wrap is temporarily disabled around every redraw so that a
  * long message never wraps onto a second visual row and desyncs the cursor
@@ -301,22 +301,34 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
 
     /**
      * Active progress bars and the deque entry they're anchored to. A bar's
-     * entry stays at its original position until {@code isDone()} freezes it,
-     * or until eviction (oldest-drops) clears the anchor.
+     * entry stays at its original position until {@code isDone()} retires it
+     * from this map, or until eviction (oldest-drops) clears the anchor.
      */
     private final IdentityHashMap<TuiProgressBar, ILoggingEvent> liveBars = new IdentityHashMap<>();
 
     /**
-     * Cached ANSI-rendered messages for frozen progress events. A live bar
-     * re-renders against its current state on every draw; freezing pins the
-     * rendering at a moment in time so further bar state changes don't mutate
-     * the historical line.
+     * Per-line snapshot of the last redraw's output (line content only — no
+     * cursor or erase escapes). Indexed by visual row, length always equals
+     * {@link #currentLineCount} after a redraw completes. Used by
+     * {@link #emitDiff} to skip unchanged rows and emit only the changed
+     * character suffix on partially-changed rows.
      */
-    private final Map<ILoggingEvent, String> frozenMessages = new HashMap<>();
+    private final List<String> prevLines = new ArrayList<>();
 
     private int currentLineCount = 0;
 
     private boolean cleanedUp = false;
+
+    /**
+     * The bar whose state currently drives the terminal/taskbar OSC 9;4
+     * indicator — set on every {@link #append} that carries a progress bar.
+     * Once a bar completes, this reference is kept so the indicator stays at
+     * 100% until another bar replaces it or {@link #cleanup} clears it.
+     */
+    private TuiProgressBar oscBar = null;
+
+    /** Last percent emitted via OSC 9;4, or {@code -1} if currently cleared. */
+    private int lastOscPercent = -1;
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -339,6 +351,10 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
             if (!cleanedUp && currentLineCount > 0) {
                 cleanedUp = true;
                 TERMINAL.print(ENABLE_WRAP);
+                if (lastOscPercent >= 0) {
+                    TERMINAL.print(TuiProgressBar.OSC_PROGRESS_CLEAR);
+                    lastOscPercent = -1;
+                }
                 TERMINAL.println();
                 TERMINAL.flush();
             }
@@ -355,18 +371,23 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
                 ILoggingEvent anchor = liveBars.get(bar);
                 if (anchor != null) {
                     replaceInPlace(anchor, event);
-                    frozenMessages.remove(anchor);
                 } else {
                     appendNew(event);
                 }
-                liveBars.put(bar, event);
+                // A completed bar's state is locked (further ticks are no-ops),
+                // so we just stop tracking it for in-place updates. Subsequent
+                // redraws still re-render it via the event's bar argument and
+                // pick up the current dim factor for its position.
                 if (bar.isDone()) {
-                    frozenMessages.put(event, renderMessage(event));
                     liveBars.remove(bar);
+                } else {
+                    liveBars.put(bar, event);
                 }
             } else {
                 appendNew(event);
             }
+
+            if (bar != null) oscBar = bar;
 
             redraw();
         }
@@ -385,7 +406,6 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         events.add(event);
         while (events.size() > TOTAL_LINES) {
             ILoggingEvent dropped = events.remove(0);
-            frozenMessages.remove(dropped);
             liveBars.values().removeIf(v -> v == dropped);
         }
     }
@@ -405,10 +425,17 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
      * Redraws the managed area in place. Oldest at top, newest at bottom;
      * brightness increases toward the newest entry. Auto-wrap is disabled for
      * the duration of the draw so each event occupies exactly one visual row.
+     *
+     * <p>Each row is diffed against its previous rendering: identical rows
+     * emit nothing (cursor just advances), partially-changed rows emit only
+     * the divergent suffix via {@link #emitDiff}, and brand-new rows do a
+     * full erase + write. This keeps a per-tick progress update down to the
+     * handful of characters that actually changed.</p>
      */
     private void redraw() {
-        StringBuilder sb = new StringBuilder();
+        List<String> newLines = buildLines();
 
+        StringBuilder sb = new StringBuilder();
         sb.append(DISABLE_WRAP);
 
         if (currentLineCount > 1) {
@@ -416,26 +443,109 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         }
         sb.append('\r');
 
-        int lineIndex = 0;
+        int max = Math.max(prevLines.size(), newLines.size());
+        for (int i = 0; i < max; i++) {
+            if (i > 0) sb.append('\n').append('\r');
+            if (i >= newLines.size()) {
+                sb.append(ERASE_LINE);
+            } else if (i >= prevLines.size()) {
+                sb.append(ERASE_LINE).append(newLines.get(i));
+            } else {
+                emitDiff(sb, prevLines.get(i), newLines.get(i));
+            }
+        }
+
+        currentLineCount = newLines.size();
+        prevLines.clear();
+        prevLines.addAll(newLines);
+
+        sb.append(ENABLE_WRAP);
+
+        if (oscBar != null) {
+            int pct = oscBar.percent();
+            if (pct != lastOscPercent) {
+                sb.append("\033]9;4;1;").append(pct).append("\033\\");
+                lastOscPercent = pct;
+            }
+        }
+
+        TERMINAL.print(sb);
+        TERMINAL.flush();
+    }
+
+    private List<String> buildLines() {
+        List<String> out = new ArrayList<>();
         int total = events.size();
         for (int i = 0; i < total; i++) {
             ILoggingEvent event = events.get(i);
             int posFromNewest = total - 1 - i;
             for (String line : formatLines(event, posFromNewest)) {
-                if (lineIndex > 0) {
-                    sb.append('\n').append('\r');
+                out.add(line);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Emits the minimum escape sequence + bytes needed to turn {@code oldLine}
+     * (already on screen at this row, cursor parked at column 1) into
+     * {@code newLine}. No-ops when the lines are equal.
+     *
+     * <p>Finds the longest common string prefix (raw bytes, including any
+     * embedded ANSI escapes), walks it to compute the visible terminal column
+     * where the lines diverge and the most recent SGR escape still in effect,
+     * then emits cursor-horizontal-absolute → erase-to-EOL → SGR replay →
+     * divergent suffix. SGR replay is required because by the time we land
+     * mid-line the terminal's SGR state has already been reset by the
+     * previous redraw's trailing {@code RESET}; without it the suffix would
+     * render uncolored.</p>
+     */
+    private static void emitDiff(StringBuilder sb, String oldLine, String newLine) {
+        if (oldLine.equals(newLine)) return;
+
+        int common = 0;
+        int min = Math.min(oldLine.length(), newLine.length());
+        while (common < min && oldLine.charAt(common) == newLine.charAt(common)) common++;
+
+        int col = 1;
+        String lastSgr = null;
+        int j = 0;
+        while (j < common) {
+            char c = oldLine.charAt(j);
+            if (c == 0x1B) {
+                // An escape sequence must be fully contained in the common
+                // prefix to be useful. If the prefix ends mid-sequence, back
+                // up so the divergent suffix begins with the new line's
+                // complete escape sequence — otherwise the terminal renders
+                // the bare parameter bytes as text.
+                if (j + 1 >= common || oldLine.charAt(j + 1) != '[') {
+                    common = j;
+                    break;
                 }
-                sb.append(ERASE_LINE).append(line);
-                lineIndex++;
+                int end = j + 2;
+                while (end < common) {
+                    char k = oldLine.charAt(end);
+                    if (k == 'm' || Character.isLetter(k)) break;
+                    end++;
+                }
+                if (end >= common) {
+                    common = j;
+                    break;
+                }
+                if (oldLine.charAt(end) == 'm') {
+                    lastSgr = oldLine.substring(j, end + 1);
+                }
+                j = end + 1;
+            } else {
+                col++;
+                j++;
             }
         }
 
-        currentLineCount = lineIndex;
-
-        sb.append(ENABLE_WRAP);
-
-        TERMINAL.print(sb);
-        TERMINAL.flush();
+        sb.append("\033[").append(col).append('G');
+        sb.append("\033[K");
+        if (lastSgr != null) sb.append(lastSgr);
+        sb.append(newLine, common, newLine.length());
     }
 
     // ── Formatting ───────────────────────────────────────────────────────────
@@ -468,7 +578,8 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         Level level = event.getLevel();
         String message = renderMessage(event);
         String color = rgb(barColor(level), f);
-        return color + levelLetter(level) + BAR + " " + message + RESET;
+        String barPart = renderBarVisual(event, f);
+        return color + levelLetter(level) + BAR + " " + barPart + color + message + RESET;
     }
 
     private String formatLineFull(ILoggingEvent event, int posFromNewest) {
@@ -478,8 +589,9 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         String th = "[" + event.getThreadName() + "]";
         String message = renderMessage(event);
         String color = rgb(barColor(level), f);
+        String barPart = renderBarVisual(event, f);
 
-        return color + levelLetter(level) + BAR + " "
+        return color + levelLetter(level) + BAR + " " + barPart
                 + rgb(META_RGB, f) + ts + " "
                 + rgb(META_RGB, f) + th + " "
                 + color + levelBadge(level) + " "
@@ -500,13 +612,14 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         String mainColor = rgb(base, f);
         String dimColor = rgb(base, f * THROWABLE_DIM_FACTOR);
         String message = renderMessage(event);
+        String barPart = renderBarVisual(event, f);
         String raw = tp.getMessage() != null ? tp.getMessage() : tp.getClassName();
         String tMsg = raw.replaceAll("\\s*\\R\\s*", " ");
 
         if ("FULL".equals(format)) {
             String ts = sdf.format(new Date(event.getTimeStamp()));
             String th = "[" + event.getThreadName() + "]";
-            return mainColor + levelLetter(level) + BAR + " "
+            return mainColor + levelLetter(level) + BAR + " " + barPart
                     + rgb(META_RGB, f) + ts + " "
                     + rgb(META_RGB, f) + th + " "
                     + mainColor + levelBadge(level) + " "
@@ -514,8 +627,8 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
                     + dimColor + ": " + tMsg
                     + RESET;
         }
-        return mainColor + levelLetter(level) + BAR + " "
-                + message
+        return mainColor + levelLetter(level) + BAR + " " + barPart
+                + mainColor + message
                 + dimColor + ": " + tMsg
                 + RESET;
     }
@@ -596,15 +709,13 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     }
 
     /**
-     * Renders the event's message, substituting {@link TuiProgressBar#toAnsi()}
-     * for any {@link TuiProgressBar} arguments. Frozen events return their
-     * cached rendering so further bar mutations don't change historical lines.
+     * Renders the event's message body, with any {@link TuiProgressBar}
+     * argument substituted by the empty string — the bar visual is rendered
+     * separately by {@link #renderBarVisual} and prepended at the line level,
+     * so the {@code {}} placeholder for a bar argument contributes nothing
+     * to the message body.
      */
     private String renderMessage(ILoggingEvent event) {
-        String frozen = frozenMessages.get(event);
-        if (frozen != null) {
-            return frozen;
-        }
         Object[] args = event.getArgumentArray();
         if (args == null || args.length == 0) {
             return event.getFormattedMessage();
@@ -621,10 +732,23 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         }
         Object[] rendered = new Object[args.length];
         for (int i = 0; i < args.length; i++) {
-            rendered[i] = args[i] instanceof TuiProgressBar bar
-                    ? bar.toAnsi()
-                    : args[i];
+            rendered[i] = args[i] instanceof TuiProgressBar ? "" : args[i];
         }
         return MessageFormatter.arrayFormat(event.getMessage(), rendered).getMessage();
+    }
+
+    /**
+     * Returns the ANSI bar visual for a progress event, dimmed against the
+     * line's age (via {@code dimFactor}), followed by a single space
+     * separator. Returns {@code ""} for non-progress events.
+     *
+     * <p>Live and completed bars use the same render path: a completed bar's
+     * state is immutable, so {@code bar.toAnsi(...)} produces the same body
+     * every draw — only the dim factor varies as the entry drifts upward.</p>
+     */
+    private String renderBarVisual(ILoggingEvent event, double dimFactor) {
+        TuiProgressBar bar = findProgressBar(event);
+        if (bar == null) return "";
+        return bar.toAnsi(rgb(TuiProgressBar.BAR_RGB, dimFactor)) + " ";
     }
 }

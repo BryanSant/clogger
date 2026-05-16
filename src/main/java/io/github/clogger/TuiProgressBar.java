@@ -25,13 +25,28 @@ package io.github.clogger;
  */
 public class TuiProgressBar {
 
-    private static final int DEFAULT_WIDTH = 10;
+    private static final int DEFAULT_WIDTH = 20;
 
     private static final char FILLED_CHAR = '▰';
     private static final char EMPTY_CHAR  = '▱';
 
     private static final String CYAN  = "\033[36m";
     private static final String RESET = "\033[0m";
+
+    /**
+     * Base RGB approximation of the bar's cyan fill. Exposed so an appender
+     * can derive a context-aware variant (e.g. age-based dimming) and feed it
+     * back through {@link #toAnsi(String)}.
+     */
+    public static final int[] BAR_RGB = {60, 200, 220};
+
+    /**
+     * OSC 9;4 escape that hides the terminal/taskbar progress indicator.
+     * Recognized by Windows Terminal, ConEmu, WezTerm, Ghostty, iTerm2, and
+     * other terminals that support the ConEmu progress protocol; silently
+     * ignored elsewhere.
+     */
+    public static final String OSC_PROGRESS_CLEAR = "\033]9;4;0\033\\";
 
     private final int total;
     private final int barWidth;
@@ -70,17 +85,48 @@ public class TuiProgressBar {
         return total > 0 ? (int) Math.round((double) current / total * barWidth) : 0;
     }
 
-    private int percent() {
+    public int percent() {
         return total > 0 ? (int) Math.round((double) current / total * 100) : 0;
+    }
+
+    /**
+     * Returns an OSC 9;4 escape that sets the terminal/taskbar progress
+     * indicator to this bar's current {@link #percent()} in the normal
+     * (state = 1) style. Recognized by Windows Terminal, ConEmu, WezTerm,
+     * Ghostty, iTerm2, and others; silently ignored by terminals that don't
+     * implement the sequence. Pair with {@link #OSC_PROGRESS_CLEAR} to hide
+     * the indicator when the work is done.
+     */
+    public String toOscProgress() {
+        return "\033]9;4;1;" + percent() + "\033\\";
     }
 
     /** ANSI-colored bar — use with {@code TuiLogAppender} / TTY output. */
     public String toAnsi() {
+        return CYAN + toPlainBar() + RESET;
+    }
+
+    /**
+     * ANSI-colored bar with a caller-supplied color escape (e.g. a dimmed
+     * cyan computed from the line's position in a log buffer). The escape
+     * colors the entire bar body — fill chars, empty chars, and percent —
+     * and is followed by a trailing {@code RESET}.
+     */
+    public String toAnsi(String colorEscape) {
+        return colorEscape + toPlainBar() + RESET;
+    }
+
+    /**
+     * The bar's plain visual: fill chars + empty chars + {@code "  NN%"}, no
+     * color. Useful for snapshotting a bar's appearance at a moment in time
+     * and re-rendering it later with different coloring.
+     */
+    public String toPlainBar() {
         int filled = filledChars();
         StringBuilder bar = new StringBuilder(barWidth);
         for (int i = 0; i < filled; i++) bar.append(FILLED_CHAR);
         for (int i = filled; i < barWidth; i++) bar.append(EMPTY_CHAR);
-        return CYAN + bar + RESET + "  " + percent() + "%";
+        return bar + "  " + percent() + "%";
     }
 
     /** Plain ASCII bar — safe for file appenders and redirected output. */
