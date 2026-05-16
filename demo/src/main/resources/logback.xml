@@ -1,5 +1,5 @@
 <configuration>
-    <appender name="CLI" class="io.github.clogger.CliLogAppender">
+    <appender name="CLI" class="io.github.clogger.TuiLogAppender">
         <!-- COMPACT (default): colored middle-dot + message only.
              Switch to FULL for timestamp, thread, and level badge:
         <format>FULL</format>
@@ -7,7 +7,7 @@
         -->
     </appender>
 
-    <root level="INFO">
+    <root level="TRACE">
         <appender-ref ref="CLI" />
     </root>
 </configuration>

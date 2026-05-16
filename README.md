@@ -4,48 +4,73 @@
 
 # Clogger
 
-**Clogger — The CLI Logger.** A Logback appender for CLI and terminal applications that replaces the traditional scrolling log wall with a concise, dynamically-updating status display. Instead of flooding the terminal, Clogger keeps a small stack of recent entries per level — INFO, WARN, and ERROR — and rewrites them in place as new events arrive.
+**Clogger — The CLI Logger.** A Logback appender for CLI and terminal applications that replaces the traditional scrolling log wall with a concise, dynamically-updating status display. By default Clogger keeps the most recent entries in a fixed-size chronological buffer and rewrites them in place as new events arrive — older entries drift upward and dim, the newest sits brightest at the bottom.
 
 
 ## How it works
 
-`CliLogAppender` writes directly to `/dev/tty` and uses ANSI escape sequences to erase and rewrite lines in place. Each level keeps the five most recent entries as a stacked section; newest is on top, older entries are progressively dimmed.
+`TuiLogAppender` (the default) writes directly to `/dev/tty` and uses ANSI escape sequences to erase and rewrite a managed area in place. Entries appear in chronological order: oldest at the top, newest at the bottom. Older entries dim as they drift upward; once the buffer is full (default 25 lines) the oldest entry rolls off the top.
 
-| Level | Behavior |
+Every line is prefixed with a single-letter level indicator (`T`/`D`/`I`/`W`/`E`) and a thin vertical bar (`│`), both colored by severity:
+
+| Level | Bar color |
+|-------|-----------|
+| ERROR | red       |
+| WARN  | yellow    |
+| INFO  | blue      |
+| DEBUG | brown     |
+| TRACE | dim gray  |
+
+Terminal auto-wrap is disabled around each redraw so a long message never wraps to a second visual row and desyncs the cursor math.
+
+`TuiProgressBar` is a companion that renders the same bar in two forms: an ANSI-colored cyan bar for the terminal, and plain ASCII for file appenders or log archives. `TuiLogAppender` auto-detects a `TuiProgressBar` argument in a log event and anchors that entry at its first emission point. Subsequent log events carrying the same bar instance overwrite that line in place — even after newer events have pushed it upward in the buffer. Once the bar reaches 100% the rendering freezes so the entry stays stable as later events scroll past.
+
+## Alternative layout: TuiLogLevelAppender
+
+`TuiLogLevelAppender` is an alternative that groups entries into stacked sections by severity instead of streaming them chronologically. Each level keeps its own most-recent-entries deque (default 5 per section); sections stack top-to-bottom in descending severity, so ERROR sits at the top of the display and TRACE at the bottom.
+
+| Level | Position |
 |-------|----------|
-| INFO  | Top section — last 5 INFO entries, newest on top, oldest dimmed |
-| WARN  | Middle section — last 5 WARN entries |
-| ERROR | Bottom section — last 5 ERROR entries |
-| DEBUG / TRACE | Silently ignored |
+| ERROR | Top      |
+| WARN  |          |
+| INFO  | Middle   |
+| DEBUG |          |
+| TRACE | Bottom   |
 
-Every line is prefixed with a thin vertical bar (`▎`) colored by severity — green for INFO, yellow for WARN, red for ERROR. Terminal auto-wrap is disabled around each redraw so a long message never wraps to a second visual row and desyncs the cursor math.
+In this mode a `TuiProgressBar` is pinned as a single live line at the top of the INFO section. Subsequent ticks overwrite that line in place until the bar reaches 100%, at which point it graduates into the INFO history.
 
-`CliProgressBar` is a companion that renders the same bar in two forms: an ANSI-colored cyan bar for the terminal, and plain ASCII for file appenders or log archives. `CliLogAppender` auto-detects a `CliProgressBar` argument in a log event and pins it as a single live line at the top of the INFO section — subsequent ticks overwrite that line in place until the bar reaches 100%, at which point it graduates into the INFO history.
+To opt in, swap the appender class in `logback.xml`:
+
+```xml
+<appender name="CLI" class="io.github.clogger.TuiLogLevelAppender">
+    <format>COMPACT</format>
+</appender>
+```
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CLOGGER_LINES` | `5` | Maximum entries retained and rendered per severity section. `CLOGGER_LINES=10 ./your-app` shows the 10 most recent INFO, WARN, and ERROR entries instead of 5. Read once at class load; non-numeric or `<1` values fall back to the default. |
+| `CLOGGER_LINES` | `25` (TuiLogAppender) / `5` (TuiLogLevelAppender) | Buffer capacity. For `TuiLogAppender` this is the total chronological buffer size; for `TuiLogLevelAppender` it's the per-severity-section entry count. Read once at class load; non-numeric or `<1` values fall back to the default. |
 
 ## Format modes
 
-`CliLogAppender` supports two format modes, configured via `<format>` in `logback.xml`:
+Both appenders support two format modes, configured via `<format>` in `logback.xml`:
 
 **COMPACT** (default) — the colored bar and the message only:
 
 ```
-▎ Connected to warehouse: jdbc:postgresql://dwh.prod:5432/analytics
-▎ Slow query detected on fact_sales — 4.2 s
-▎ Deserialization failure on record 3847
+│ Connected to warehouse: jdbc:postgresql://dwh.prod:5432/analytics
+│ Slow query detected on fact_sales — 4.2 s
+│ Deserialization failure on record 3847
 ```
 
 **FULL** — bar, timestamp, thread, level badge, and message:
 
 ```
-▎ 10:42:31.005 [main]          INFO  Connected to warehouse: jdbc:postgresql://dwh.prod:5432/analytics
-▎ 10:42:33.210 [pipeline-pool] WARN  Slow query detected on fact_sales — 4.2 s
-▎ 10:42:35.887 [pipeline-pool] ERROR Deserialization failure on record 3847
+│ 10:42:31.005 [main]          INFO  Connected to warehouse: jdbc:postgresql://dwh.prod:5432/analytics
+│ 10:42:33.210 [pipeline-pool] WARN  Slow query detected on fact_sales — 4.2 s
+│ 10:42:35.887 [pipeline-pool] ERROR Deserialization failure on record 3847
 ```
 
 ## When to use Clogger (and when not to)
@@ -54,13 +79,12 @@ Clogger is for **interactive terminal output** — CLI tools, local development,
 
 ### Do not use Clogger in Kubernetes (or any container-based deployment)
 
-In Kubernetes the platform collects every line your process writes to `stdout` and forwards it to a centralized logging backend (Loki, Elastic, Cloud Logging, Datadog, etc.). Those backends expect one structured log event per line. Clogger does the opposite of that: it rewrites lines in place using ANSI cursor-control escape sequences, it filters DEBUG/TRACE entirely, and it only ever shows the most recent few entries per level. None of that is what a log aggregator wants.
+In Kubernetes the platform collects every line your process writes to `stdout` and forwards it to a centralized logging backend (Loki, Elastic, Cloud Logging, Datadog, etc.). Those backends expect one structured log event per line. Clogger does the opposite of that: it rewrites lines in place using ANSI cursor-control escape sequences and only ever retains a bounded window of recent entries. None of that is what a log aggregator wants.
 
 If you ship Clogger to production in a container, you will end up with:
 
 - Cursor-control escape sequences embedded in your centralized logs.
-- Dropped DEBUG/TRACE events that you wanted to keep.
-- Missing history — only the last few entries per level are ever flushed.
+- Missing history — only the last few entries inside the buffer are ever flushed.
 - No structured timestamps, threads, or MDC by default.
 
 In a container, configure plain stdout logging through Logback's standard `ConsoleAppender` instead.
@@ -72,17 +96,17 @@ Use **two separate `logback.xml` configurations** and pick between them by profi
 1. **Local development** — Clogger writes the live summary to your terminal, and a `RollingFileAppender` captures everything (including DEBUG) to a local file you can `tail -f` or grep through.
 2. **Production / Kubernetes** — a plain `ConsoleAppender` writes one structured line per event to stdout; the platform takes it from there. No Clogger, no file appender.
 
-Spring Boot, Quarkus, and Micronaut all support profile-scoped Logback configs (e.g. `logback-spring.xml` with `<springProfile>` blocks, or `logback-dev.xml` / `logback-prod.xml` selected by `LOGBACK_CONFIGURATION_FILE`). Use whichever mechanism your framework provides — the point is that the production config should never reference `io.github.clogger.CliLogAppender`.
+Spring Boot, Quarkus, and Micronaut all support profile-scoped Logback configs (e.g. `logback-spring.xml` with `<springProfile>` blocks, or `logback-dev.xml` / `logback-prod.xml` selected by `LOGBACK_CONFIGURATION_FILE`). Use whichever mechanism your framework provides — the point is that the production config should never reference any `io.github.clogger.*` appender (`TuiLogAppender` or `TuiLogLevelAppender`).
 
 ## Logback configuration
 
 ### CLI-only (standalone command-line tool)
 
-Use `CliLogAppender` as the sole appender when the application *is* the terminal session:
+Use `TuiLogAppender` as the sole appender when the application *is* the terminal session:
 
 ```xml
 <configuration>
-    <appender name="CLI" class="io.github.clogger.CliLogAppender">
+    <appender name="CLI" class="io.github.clogger.TuiLogAppender">
         <!-- COMPACT (default) or FULL -->
         <format>COMPACT</format>
         <!-- Optional: timestamp format used in FULL mode -->
@@ -97,17 +121,17 @@ Use `CliLogAppender` as the sole appender when the application *is* the terminal
 
 ### CLI + file (recommended for local development)
 
-Pair `CliLogAppender` with a `RollingFileAppender` so you get a calm terminal view *and* a complete, timestamped, DEBUG-inclusive log on disk. This is the configuration you want when running a Spring Boot / Ktor / Quarkus / Micronaut service locally.
+Pair `TuiLogAppender` with a `RollingFileAppender` so you get a calm terminal view *and* a complete, timestamped, DEBUG-inclusive log on disk. This is the configuration you want when running a Spring Boot / Ktor / Quarkus / Micronaut service locally.
 
 ```xml
 <configuration>
 
-    <!-- Live terminal view: only INFO/WARN/ERROR, rewritten in place. -->
-    <appender name="CLI" class="io.github.clogger.CliLogAppender">
+    <!-- Live terminal view: rewritten in place. Use a ThresholdFilter to keep
+         noisy DEBUG/TRACE events out of the terminal stack — they still flow
+         to the file appender below. -->
+    <appender name="CLI" class="io.github.clogger.TuiLogAppender">
         <format>COMPACT</format>
         <datePattern>HH:mm:ss.SSS</datePattern>
-        <!-- The appender itself ignores DEBUG/TRACE, but keep a ThresholdFilter
-             so events below INFO never even reach it. -->
         <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
             <level>INFO</level>
         </filter>
@@ -157,14 +181,14 @@ For comparison, here is the corresponding *production* config — plain stdout, 
 
 Select between the two configs by profile (Spring Boot `logback-spring.xml` with `<springProfile name="dev">` / `<springProfile name="!dev">`, Quarkus `quarkus.log.*` properties, Micronaut `logback-dev.xml` / `logback-prod.xml`, etc.).
 
-## Using CliProgressBar
+## Using TuiProgressBar
 
-Pass a `CliProgressBar` as a log argument and every appender renders it the way it prefers:
+Pass a `TuiProgressBar` as a log argument and every appender renders it the way it prefers:
 
 ```java
-import io.github.clogger.CliProgressBar;
+import io.github.clogger.TuiProgressBar;
 
-CliProgressBar bar = new CliProgressBar(totalRecords);
+TuiProgressBar bar = new TuiProgressBar(totalRecords);
 
 for (Record r : records) {
     process(r);
@@ -175,7 +199,7 @@ bar.complete();
 log.info("Done: {}", bar);
 ```
 
-`CliLogAppender` detects the `CliProgressBar` argument and pins it as a single live line at the top of the INFO section — subsequent ticks overwrite that line in place until the bar reaches 100%, at which point it graduates into the INFO history. File appenders and other backends see `bar.toString()` (plain ASCII), so no ANSI escapes leak into log files.
+`TuiLogAppender` anchors the bar's entry at its first emission point and overwrites that line in place on each subsequent tick — even after newer events have pushed it upward in the buffer. Once the bar reaches 100% the rendering freezes so the entry stays stable as later events scroll past. (Under `TuiLogLevelAppender` the bar is instead pinned at the top of the INFO section until it reaches 100%, at which point it graduates into the INFO history.) File appenders and other backends see `bar.toString()` (plain ASCII), so no ANSI escapes leak into log files.
 
 Plain text output looks like: `[########--------] 50% (500/1000)`
 
@@ -193,7 +217,7 @@ Requires **Java 25** and the included Gradle wrapper.
 ./gradlew test
 
 # Run a single visual test (shows live terminal output)
-./gradlew test --tests "*.CliLogAppenderSimulationTest" -i
+./gradlew test --tests "*.TuiLogAppenderSimulationTest" -i
 ```
 
 The built jar is placed at `build/libs/clogger-1.0.0-SNAPSHOT.jar`.

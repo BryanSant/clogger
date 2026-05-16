@@ -3,15 +3,15 @@ package io.github.clogger;
 /**
  * A progress bar helper that renders two formats:
  * <ul>
- *   <li>{@link #toAnsi()} — ANSI-colored bar (cyan fill), ideal for {@code CliLogAppender} / TTY.</li>
+ *   <li>{@link #toAnsi()} — ANSI-colored bar (cyan fill), ideal for {@code TuiLogAppender} / TTY.</li>
  *   <li>{@link #toText()} / {@link #toString()} — plain ASCII bar, safe for file appenders.</li>
  * </ul>
  *
  * <p>Pass the bar as a log argument and each appender picks the right rendering:
- * {@code CliLogAppender} detects the {@code CliProgressBar} argument and uses
+ * {@code TuiLogAppender} detects the {@code TuiProgressBar} argument and uses
  * {@link #toAnsi()}; every other appender sees {@link #toString()} (plain ASCII).</p>
  * <pre>{@code
- * CliProgressBar pb = new CliProgressBar(files.size());
+ * TuiProgressBar pb = new TuiProgressBar(files.size());
  * for (File f : files) {
  *     process(f);
  *     logger.info("Uploading files … {}", pb.tick());
@@ -20,10 +20,10 @@ package io.github.clogger;
  *
  * <p>Custom width:</p>
  * <pre>{@code
- * new CliProgressBar(100, 30)   // 30-character wide bar
+ * new TuiProgressBar(100, 30)   // 30-character wide bar
  * }</pre>
  */
-public class CliProgressBar {
+public class TuiProgressBar {
 
     private static final int DEFAULT_WIDTH = 10;
 
@@ -37,20 +37,20 @@ public class CliProgressBar {
     private final int barWidth;
     private int current = 0;
 
-    public CliProgressBar(int total) {
+    public TuiProgressBar(int total) {
         this(total, DEFAULT_WIDTH);
     }
 
-    public CliProgressBar(int total, int barWidth) {
+    public TuiProgressBar(int total, int barWidth) {
         this.total = total;
         this.barWidth = barWidth;
     }
 
-    public CliProgressBar tick() {
+    public TuiProgressBar tick() {
         return tick(1);
     }
 
-    public CliProgressBar tick(int amount) {
+    public TuiProgressBar tick(int amount) {
         int safe = Math.min(amount, total - current);
         if (safe > 0) {
             current += safe;
@@ -58,7 +58,7 @@ public class CliProgressBar {
         return this;
     }
 
-    public CliProgressBar complete() {
+    public TuiProgressBar complete() {
         return tick(total - current);
     }
 
@@ -74,7 +74,7 @@ public class CliProgressBar {
         return total > 0 ? (int) Math.round((double) current / total * 100) : 0;
     }
 
-    /** ANSI-colored bar — use with {@code CliLogAppender} / TTY output. */
+    /** ANSI-colored bar — use with {@code TuiLogAppender} / TTY output. */
     public String toAnsi() {
         int filled = filledChars();
         StringBuilder bar = new StringBuilder(barWidth);
