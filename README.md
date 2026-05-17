@@ -4,12 +4,12 @@
 
 # Clogger
 
-**Clogger — The CLI Logger.** A Logback appender for CLI and terminal applications that replaces the traditional scrolling log wall with a concise, dynamically-updating status display. By default Clogger keeps the most recent entries in a fixed-size chronological buffer and rewrites them in place as new events arrive — older entries drift upward and dim, the newest sits brightest at the bottom.
+**Clogger — The CLI Logger.** A Logback appender for CLI and terminal applications that replaces the traditional scrolling log wall with a concise, dynamically-updating status display. By default Clogger keeps the most recent entries in a fixed-size chronological buffer and rewrites them in place as new events arrive — older entries dim and drift downward, the newest sits brightest at the top.
 
 
 ## How it works
 
-`TuiLogAppender` (the default) writes directly to `/dev/tty` and uses ANSI escape sequences to erase and rewrite a managed area in place. Entries appear in chronological order: oldest at the top, newest at the bottom. Older entries dim as they drift upward; once the buffer is full (default 25 lines) the oldest entry rolls off the top.
+`TuiLogAppender` (the default) writes directly to `/dev/tty` and uses ANSI escape sequences to erase and rewrite a managed area in place. By default entries appear with the newest at the top and the oldest at the bottom; older entries dim as they age. Once the buffer is full (default 25 lines) the oldest entry rolls off. Both the order and the dimming are configurable — see [Configuration](#configuration) below.
 
 Every line is prefixed with a single-letter level indicator (`T`/`D`/`I`/`W`/`E`) and a thin vertical bar (`│`), both colored by severity:
 
@@ -47,11 +47,79 @@ To opt in, swap the appender class in `logback.xml`:
 </appender>
 ```
 
-## Environment variables
+## Configuration
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `CLOGGER_LINES` | `25` (TuiLogAppender) / `5` (TuiLogLevelAppender) | Buffer capacity. For `TuiLogAppender` this is the total chronological buffer size; for `TuiLogLevelAppender` it's the per-severity-section entry count. Read once at class load; non-numeric or `<1` values fall back to the default. |
+Clogger reads configuration from three sources, with later sources overriding earlier ones:
+
+1. **Hard-coded defaults** — used when nothing else is set.
+2. **Logback XML setters** — child elements inside `<appender>` are matched, via reflection, to bean-style setters on the appender class (e.g. `<totalLines>40</totalLines>` calls `setTotalLines(40)` during Logback startup). Type coercion is handled by Logback's Joran configurator.
+3. **Environment variables** — `CLOGGER_*` env vars are applied at the top of `start()` and override both the XML setters and the defaults. This is the operator escape hatch: an end user can tweak a pre-built binary's TUI behavior without editing `logback.xml`.
+
+No Java system properties are read directly. If you want to drive configuration from system properties anyway, use Logback's built-in `${name}` substitution inside the XML — for example `<totalLines>${myapp.tui.lines:-25}</totalLines>` resolves against system properties, environment variables, and Logback's own context properties (still subject to env-var override).
+
+Both appenders accept the following child elements in `logback.xml`. Every property is optional — defaults are listed.
+
+### `TuiLogAppender` (chronological)
+
+| Element | Default | Purpose |
+|---------|---------|---------|
+| `<totalLines>` | `25` | Buffer capacity. Overridable by `CLOGGER_LINES`; values `< 1` fall back to `25`. |
+| `<order>` | `NEWEST_FIRST` | `NEWEST_FIRST` puts the newest entry at the top; `OLDEST_FIRST` puts it at the bottom. |
+| `<dim>` | `true` | When `true`, older entries are progressively dimmed; when `false`, every entry renders at full brightness. |
+| `<markup>` | `true` | When `true`, inline `[color]…[/]` and `[bold]…[/]` markup is parsed in messages; when `false`, tags appear verbatim. |
+| `<format>` | `COMPACT` | `COMPACT` or `FULL` (see [Format modes](#format-modes)). |
+| `<datePattern>` | `HH:mm:ss.SSS` | Timestamp pattern used in `FULL` mode. |
+
+### `TuiLogLevelAppender` (grouped by severity)
+
+| Element | Default | Purpose |
+|---------|---------|---------|
+| `<lines>` | `5` | Entries retained per severity section. Overridable by `CLOGGER_LINES`; values `< 1` fall back to `5`. |
+| `<dim>` | `true` | When `true`, older entries within a section are progressively dimmed. |
+| `<markup>` | `true` | When `true`, inline markup tags in messages are parsed. |
+| `<format>` | `COMPACT` | `COMPACT` or `FULL`. |
+| `<datePattern>` | `HH:mm:ss.SSS` | Timestamp pattern used in `FULL` mode. |
+
+Example with every option set:
+
+```xml
+<appender name="CLI" class="io.github.clogger.TuiLogAppender">
+    <totalLines>40</totalLines>
+    <order>OLDEST_FIRST</order>
+    <dim>false</dim>
+    <markup>true</markup>
+    <format>FULL</format>
+    <datePattern>HH:mm:ss.SSS</datePattern>
+</appender>
+```
+
+### Environment variables
+
+Every XML property has a matching `CLOGGER_*` env var. When set, the env var wins over both the XML setter and the built-in default. Values follow a lowercase convention (`true`/`false`, `newest_first`, `compact`, …); `CLOGGER_DATE_PATTERN` is the one case-sensitive exception since `SimpleDateFormat` patterns require mixed case (`HH:mm:ss.SSS`). Unset, blank, or unrecognized values are silently ignored — the XML/default value is kept.
+
+| Variable | Applies to | Accepted values | Overrides |
+|----------|------------|-----------------|-----------|
+| `CLOGGER_LINES` | both | positive integer | `<totalLines>` on `TuiLogAppender`; `<lines>` on `TuiLogLevelAppender` |
+| `CLOGGER_ORDER` | `TuiLogAppender` only | `newest_first` \| `oldest_first` | `<order>` |
+| `CLOGGER_DIM` | both | `true` \| `false` | `<dim>` |
+| `CLOGGER_MARKUP` | both | `true` \| `false` | `<markup>` |
+| `CLOGGER_FORMAT` | both | `compact` \| `full` | `<format>` |
+| `CLOGGER_DATE_PATTERN` | both | `SimpleDateFormat` pattern (case-sensitive) | `<datePattern>` |
+
+Example:
+
+```bash
+CLOGGER_LINES=15 CLOGGER_ORDER=oldest_first CLOGGER_DIM=false ./my-cli-tool
+```
+
+### `NO_COLOR`
+
+Clogger honors the [`NO_COLOR`](https://no-color.org/) convention. When the `NO_COLOR` environment variable is set to any non-empty value, both appenders suppress every ANSI color escape — level bars, message text, timestamps, progress-bar fills, and inline `[red]…[/]` / `[#ff77ac]…[/]` markup colors all render without color. Per the spec, only color is suppressed: bold, italic, underline, strike, OSC 8 hyperlinks, and the OSC 9;4 taskbar progress indicator still work. The level letter (`T`/`D`/`I`/`W`/`E`) and the `│` bar character remain so each line is still classifiable at a glance. `NO_COLOR` is read once at class load and is independent of the `CLOGGER_*` settings.
+
+```bash
+NO_COLOR=1 ./my-cli-tool          # no color, styles + structure preserved
+NO_COLOR=1 CLOGGER_MARKUP=false   # additionally disable inline tag parsing entirely
+```
 
 ## Format modes
 

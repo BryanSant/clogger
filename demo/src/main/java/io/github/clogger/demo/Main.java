@@ -17,7 +17,7 @@ public class Main {
         log.debug("Resolved JDBC URL from $DATABASE_URL → jdbc:postgresql://db.internal:5432/analytics");
         sleep();
 
-        log.info("Connecting to data source at jdbc:postgresql://db.internal:5432/analytics");
+        log.info("Connecting to data source at [cyan]jdbc:postgresql://db.internal:5432/analytics[/]");
         sleep();
 
         log.trace("TCP handshake complete with db.internal:5432 (12 ms)");
@@ -35,19 +35,19 @@ public class Main {
         log.trace("Inspecting table public.users — 23 columns");
         sleep();
 
-        log.info("Schema validation complete — 142 tables OK, 0 issues found");
+        log.info("Schema validation complete — [bold]142[/] tables OK, [green]0 issues[/] found");
         sleep();
 
         log.debug("Pipeline YAML parsed: 8 stages, 14 transforms, 3 sinks");
         sleep();
 
-        log.info("Loading pipeline configuration from /etc/etl/pipeline.yaml");
+        log.info("Loading pipeline configuration from [italic]/etc/etl/pipeline.yaml[/]");
         sleep();
 
         log.info("Pipeline ready — 8 stages configured, parallelism=4");
         sleep();
 
-        log.warn("Partition 'events_2023_q1' has not been refreshed in 72h — stale data risk");
+        log.warn("Partition [#ffb86c]events_2023_q1[/] has not been refreshed in [bold]72h[/] — stale data risk");
         sleep();
 
         // ── Phase 2: record processing (INFO × 10) ──────────────────────────
@@ -78,7 +78,7 @@ public class Main {
         log.info("Processing records [3001 – 4000 / 10 000] {}", pb.tick(1000));
         sleep();
 
-        log.warn("Slow query detected on table 'clickstream' — took 4 312 ms (threshold: 2 000 ms)");
+        log.warn("Slow query detected on table [underline]clickstream[/] — took [#f55]4 312 ms[/] (threshold: 2 000 ms)");
         sleep();
 
         log.info("Processing records [4001 – 5000 / 10 000] {}", pb.tick(1000));
@@ -134,13 +134,13 @@ public class Main {
         log.debug("Flushing 9 997 records to output sink");
         sleep();
 
-        log.info("Writing output to s3://data-lake/analytics/run-20260425T143000Z/part-0001.parquet");
+        log.info("Writing output to [link https://example.com/data-lake/analytics/run-20260425T143000Z]s3://data-lake/analytics/run-20260425T143000Z/part-0001.parquet[/]");
         sleep();
 
         log.trace("Output file fsync complete (412 ms)");
         sleep();
 
-        log.info("Run complete — 9 997 records processed, 3 skipped, 1 stage degraded");
+        log.info("Run complete — [bold][green]9 997 records[/] processed, [orange]3 skipped[/], [strike]1 stage[/] degraded[/]");
         sleep();
     }
 

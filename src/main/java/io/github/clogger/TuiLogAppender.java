@@ -21,12 +21,14 @@ import java.util.Locale;
 
 /**
  * Chronological TUI log appender — renders TRACE/DEBUG/INFO/WARN/ERROR entries
- * in the order they arrived, oldest at top, newest at bottom. The newest entry
- * is brightest; older entries dim as they drift upward.
+ * in the order they arrived. By default the newest entry sits at the top
+ * (configurable via {@code <order>}); the newest entry is brightest and older
+ * entries dim as they age (configurable via {@code <dim>}).
  *
- * <p>Holds the most recent {@value #DEFAULT_TOTAL_LINES} entries (overridable
- * via the {@code CLOGGER_LINES} environment variable). When the buffer fills,
- * the oldest entry is dropped from the top.</p>
+ * <p>Holds the most recent {@value #DEFAULT_TOTAL_LINES} entries by default
+ * (overridable via the {@code <totalLines>} setter, or the
+ * {@code CLOGGER_LINES} environment variable as a default). When the buffer
+ * fills, the oldest entry is dropped from the top.</p>
  *
  * <p>Each line is prefixed with a single-letter level indicator
  * ({@code T}/{@code D}/{@code I}/{@code W}/{@code E}) followed by a thin
@@ -53,13 +55,35 @@ import java.util.Locale;
  *   <li>{@code FULL} — bar, timestamp, thread name, level badge, message.</li>
  * </ul>
  *
+ * <p>Configurable properties (all optional, settable via {@code logback.xml}
+ * child elements):</p>
+ * <ul>
+ *   <li>{@code <totalLines>}{@code N}{@code </totalLines>} — buffer capacity
+ *       (default 25; {@code CLOGGER_LINES} env var overrides the default).</li>
+ *   <li>{@code <order>NEWEST_FIRST|OLDEST_FIRST</order>} — visual order; default
+ *       {@code NEWEST_FIRST} (newest at top).</li>
+ *   <li>{@code <dim>true|false</dim>} — whether older entries are progressively
+ *       dimmed (default {@code true}).</li>
+ *   <li>{@code <markup>true|false</markup>} — whether inline {@code [color]}/
+ *       {@code [bold]}-style markup is parsed in messages (default
+ *       {@code true}).</li>
+ *   <li>{@code <format>COMPACT|FULL</format>} — line format (default
+ *       {@code COMPACT}).</li>
+ *   <li>{@code <datePattern>} — timestamp format used in {@code FULL} mode
+ *       (default {@code HH:mm:ss.SSS}).</li>
+ * </ul>
+ *
  * Configure in {@code logback.xml}:
  * <pre>{@code
- * <!-- COMPACT (default) -->
+ * <!-- Defaults -->
  * <appender name="CLI" class="io.github.clogger.TuiLogAppender"/>
  *
- * <!-- FULL -->
+ * <!-- Customized -->
  * <appender name="CLI" class="io.github.clogger.TuiLogAppender">
+ *     <totalLines>40</totalLines>
+ *     <order>OLDEST_FIRST</order>
+ *     <dim>false</dim>
+ *     <markup>false</markup>
  *     <format>FULL</format>
  *     <datePattern>HH:mm:ss.SSS</datePattern>
  * </appender>
@@ -69,26 +93,8 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
 
     // ── Constants ────────────────────────────────────────────────────────────
 
-    /** Default total entries retained if {@code CLOGGER_LINES} is not set. */
+    /** Default total entries retained if no XML setter or env-var override is set. */
     private static final int DEFAULT_TOTAL_LINES = 25;
-
-    /**
-     * Max entries retained (and rendered) across all severities. Overridden by
-     * the {@code CLOGGER_LINES} environment variable; defaults to
-     * {@value #DEFAULT_TOTAL_LINES}. Values below 1 fall back to the default.
-     */
-    static final int TOTAL_LINES = resolveTotalLines();
-
-    private static int resolveTotalLines() {
-        String env = System.getenv("CLOGGER_LINES");
-        if (env == null || env.isBlank()) return DEFAULT_TOTAL_LINES;
-        try {
-            int n = Integer.parseInt(env.trim());
-            return n >= 1 ? n : DEFAULT_TOTAL_LINES;
-        } catch (NumberFormatException e) {
-            return DEFAULT_TOTAL_LINES;
-        }
-    }
 
     /** Thin vertical bar prefix — box drawings light vertical (U+2502). */
     private static final String BAR = "│";
@@ -106,13 +112,6 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
 
     /** Minimum brightness multiplier for the oldest visible entry. */
     private static final double MIN_DIM_FACTOR = 0.25;
-
-    /**
-     * Brightness multipliers indexed by position from newest (0) to oldest,
-     * linearly interpolated from 1.0 down to {@link #MIN_DIM_FACTOR} across
-     * {@link #TOTAL_LINES} positions.
-     */
-    private static final double[] DIM_FACTORS = computeDimFactors(TOTAL_LINES);
 
     private static double[] computeDimFactors(int n) {
         double[] factors = new double[n];
@@ -152,6 +151,23 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         } catch (FileNotFoundException e) {
             return System.out;
         }
+    }
+
+    // ── NO_COLOR honor (https://no-color.org) ────────────────────────────────
+
+    /**
+     * {@code true} when the {@code NO_COLOR} env var is set to any non-empty
+     * value. In that mode {@link #rgb(int[], double)} short-circuits to the
+     * empty string so no color escape sequences are emitted. Non-color signals
+     * (bold/italic/underline styles, OSC 8 hyperlinks, OSC 9;4 taskbar
+     * progress) still pass through — per the NO_COLOR spec, only color is
+     * suppressed.
+     */
+    private static final boolean NO_COLOR = resolveNoColor();
+
+    private static boolean resolveNoColor() {
+        String nc = System.getenv("NO_COLOR");
+        return nc != null && !nc.isEmpty();
     }
 
     // ── Terminal background detection ────────────────────────────────────────
@@ -290,13 +306,69 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         return datePattern;
     }
 
+    /**
+     * Buffer capacity — max entries retained and rendered. Default is
+     * {@value #DEFAULT_TOTAL_LINES}; the XML setter overrides it, and the
+     * {@code CLOGGER_LINES} env var overrides that (applied in
+     * {@link #start()}). Values {@code < 1} fall back to the default.
+     */
+    private int totalLines = DEFAULT_TOTAL_LINES;
+
+    public void setTotalLines(int totalLines) {
+        this.totalLines = totalLines >= 1 ? totalLines : DEFAULT_TOTAL_LINES;
+    }
+
+    public int getTotalLines() {
+        return totalLines;
+    }
+
+    /** {@code NEWEST_FIRST} (default — newest at top) or {@code OLDEST_FIRST}. */
+    private String order = "NEWEST_FIRST";
+
+    public void setOrder(String order) {
+        this.order = order.toUpperCase(Locale.ROOT);
+    }
+
+    public String getOrder() {
+        return order;
+    }
+
+    /** When {@code true} (default), older entries are progressively dimmed. */
+    private boolean dim = true;
+
+    public void setDim(boolean dim) {
+        this.dim = dim;
+    }
+
+    public boolean isDim() {
+        return dim;
+    }
+
+    /** When {@code true} (default), inline markup tags in messages are parsed. */
+    private boolean markup = true;
+
+    public void setMarkup(boolean markup) {
+        this.markup = markup;
+    }
+
+    public boolean isMarkup() {
+        return markup;
+    }
+
     // ── Internal state (all access guarded by lock) ──────────────────────────
 
     private final Object lock = new Object();
 
     private SimpleDateFormat sdf;
 
-    /** Chronological buffer — index 0 = oldest, last = newest. Capped at {@link #TOTAL_LINES}. */
+    /**
+     * Brightness multipliers indexed by position from newest (0) to oldest,
+     * linearly interpolated from 1.0 down to {@link #MIN_DIM_FACTOR} across
+     * {@link #totalLines} positions. Computed in {@link #start()}.
+     */
+    private double[] dimFactors;
+
+    /** Chronological buffer — index 0 = oldest, last = newest. Capped at {@link #totalLines}. */
     private final List<ILoggingEvent> events = new ArrayList<>();
 
     /**
@@ -334,10 +406,30 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
 
     @Override
     public void start() {
+        applyEnvOverrides();
         sdf = new SimpleDateFormat(datePattern);
+        dimFactors = computeDimFactors(totalLines);
         Runtime.getRuntime().addShutdownHook(
                 new Thread(this::cleanup, "TuiLogAppender-shutdown"));
         super.start();
+    }
+
+    /**
+     * Applies {@code CLOGGER_*} environment-variable overrides on top of any
+     * XML-configured values. Env vars are the highest-priority configuration
+     * source — values set here win over both Logback XML setters and the
+     * built-in defaults. Called once at the top of {@link #start()}.
+     */
+    private void applyEnvOverrides() {
+        EnvConfig.readInt("CLOGGER_LINES", 1).ifPresent(n -> totalLines = n);
+        EnvConfig.readString("CLOGGER_ORDER")
+                .ifPresent(s -> order = s.toUpperCase(Locale.ROOT));
+        EnvConfig.readBool("CLOGGER_DIM").ifPresent(b -> dim = b);
+        EnvConfig.readBool("CLOGGER_MARKUP").ifPresent(b -> markup = b);
+        EnvConfig.readString("CLOGGER_FORMAT")
+                .ifPresent(s -> format = s.toUpperCase(Locale.ROOT));
+        EnvConfig.readString("CLOGGER_DATE_PATTERN")
+                .ifPresent(s -> datePattern = s);
     }
 
     @Override
@@ -404,7 +496,7 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
 
     private void appendNew(ILoggingEvent event) {
         events.add(event);
-        while (events.size() > TOTAL_LINES) {
+        while (events.size() > totalLines) {
             ILoggingEvent dropped = events.remove(0);
             liveBars.values().removeIf(v -> v == dropped);
         }
@@ -476,9 +568,11 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     private List<String> buildLines() {
         List<String> out = new ArrayList<>();
         int total = events.size();
+        boolean newestFirst = "NEWEST_FIRST".equals(order);
         for (int i = 0; i < total; i++) {
-            ILoggingEvent event = events.get(i);
-            int posFromNewest = total - 1 - i;
+            int idx = newestFirst ? total - 1 - i : i;
+            ILoggingEvent event = events.get(idx);
+            int posFromNewest = total - 1 - idx;
             for (String line : formatLines(event, posFromNewest)) {
                 out.add(line);
             }
@@ -576,8 +670,8 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     private String formatLineCompact(ILoggingEvent event, int posFromNewest) {
         double f = dimFactor(posFromNewest);
         Level level = event.getLevel();
-        String message = renderMessage(event);
         String color = rgb(barColor(level), f);
+        String message = renderBody(event, color, f);
         String barPart = renderBarVisual(event, f);
         return color + levelLetter(level) + BAR + " " + barPart + color + message + RESET;
     }
@@ -587,8 +681,8 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         Level level = event.getLevel();
         String ts = sdf.format(new Date(event.getTimeStamp()));
         String th = "[" + event.getThreadName() + "]";
-        String message = renderMessage(event);
         String color = rgb(barColor(level), f);
+        String message = renderBody(event, color, f);
         String barPart = renderBarVisual(event, f);
 
         return color + levelLetter(level) + BAR + " " + barPart
@@ -611,7 +705,7 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         int[] base = barColor(level);
         String mainColor = rgb(base, f);
         String dimColor = rgb(base, f * THROWABLE_DIM_FACTOR);
-        String message = renderMessage(event);
+        String message = renderBody(event, mainColor, f);
         String barPart = renderBarVisual(event, f);
         String raw = tp.getMessage() != null ? tp.getMessage() : tp.getClassName();
         String tMsg = raw.replaceAll("\\s*\\R\\s*", " ");
@@ -684,12 +778,35 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         return ERROR_BAR;
     }
 
-    private static double dimFactor(int posFromNewest) {
-        int i = Math.min(posFromNewest, DIM_FACTORS.length - 1);
-        return DIM_FACTORS[i];
+    private double dimFactor(int posFromNewest) {
+        if (!dim) return 1.0;
+        int i = Math.min(posFromNewest, dimFactors.length - 1);
+        return dimFactors[i];
+    }
+
+    /**
+     * Renders the formatted message body for a line, applying inline markup
+     * parsing when {@link #markup} is enabled. When disabled, returns the raw
+     * formatted message so any {@code [tag]} characters appear verbatim.
+     */
+    private String renderBody(ILoggingEvent event, String currentColor, double f) {
+        String raw = renderMessage(event);
+        if (!markup) return raw;
+        return MarkupParser.parse(raw, currentColor, dimTransform(f));
+    }
+
+    /**
+     * Markup color transform bound to a line's dim factor — so {@code [red]}
+     * and {@code [#ff77ac]} in a message body fade with age the same way the
+     * line's level color does, instead of staying full-saturation while
+     * everything around them dims.
+     */
+    private static MarkupParser.ColorTransform dimTransform(double factor) {
+        return (r, g, b) -> rgb(new int[]{r, g, b}, factor);
     }
 
     private static String rgb(int[] base, double factor) {
+        if (NO_COLOR) return "";
         int r, g, b;
         if (DARK_BACKGROUND) {
             r = clamp((int) Math.round(base[0] * factor));
