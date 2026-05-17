@@ -134,7 +134,7 @@ public class Main {
         log.debug("Flushing 9 997 records to output sink");
         sleep();
 
-        log.info("Writing output to [link https://example.com/data-lake/analytics/run-20260425T143000Z]s3://data-lake/analytics/run-20260425T143000Z/part-0001.parquet[/]");
+        log.info("Writing output to [link=https://example.com/data-lake/analytics/run-20260425T143000Z]s3://data-lake/analytics/run-20260425T143000Z/part-0001.parquet[/]");
         sleep();
 
         log.trace("Output file fsync complete (412 ms)");

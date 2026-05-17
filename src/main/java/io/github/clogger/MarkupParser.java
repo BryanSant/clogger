@@ -9,20 +9,26 @@ import java.util.Map;
 /**
  * Translates a Rich-inspired markup subset into ANSI/OSC escape sequences.
  *
- * <p>Supported tags:</p>
+ * <p>Supported tag parts:</p>
  * <ul>
  *   <li>Styles: {@code [bold]}, {@code [italic]}, {@code [dim]},
  *       {@code [underline]}, {@code [strike]}</li>
  *   <li>Named colors: {@code [red]}, {@code [blue]}, {@code [orange]}, …</li>
  *   <li>Hex colors: {@code [#fff]} or {@code [#ff77ac]}</li>
- *   <li>Hyperlinks: {@code [link https://example.com]}</li>
+ *   <li>Hyperlinks: {@code [link=https://example.com]}</li>
  * </ul>
  *
+ * <p>Multiple parts can be combined inside a single tag separated by
+ * whitespace, e.g. {@code [bold link=https://example.com]bold link[/]} or
+ * {@code [italic #ff77ac]pink italic[/]}. A compound tag opens all of its
+ * parts at once and is popped as a single unit by {@code [/]}.</p>
+ *
  * <p>All tags close with {@code [/]}, which pops the most recent open tag —
- * tags nest. Unrecognized tag names, hex strings that don't match
- * {@code #rgb} or {@code #rrggbb}, malformed brackets, and stray {@code [/]}
- * are not errors: the offending {@code '['} is emitted as literal text and
- * parsing continues from the next character.</p>
+ * tags nest. If any part of a compound tag is unrecognized the whole tag is
+ * treated as literal text. Unrecognized tag names, hex strings that don't
+ * match {@code #rgb} or {@code #rrggbb}, malformed brackets, and stray
+ * {@code [/]} are not errors: the offending {@code '['} is emitted as
+ * literal text and parsing continues from the next character.</p>
  *
  * <p>{@code defaultSgr} is the ANSI sequence that represents the caller's
  * "current" foreground color/style at the point where the markup begins. On
@@ -140,7 +146,21 @@ final class MarkupParser {
     }
 
     private static String openSequence(String tag, ColorTransform transform) {
-        switch (tag) {
+        if (tag.isEmpty()) return null;
+        if (tag.indexOf(' ') < 0) return openPart(tag, transform);
+
+        StringBuilder combined = new StringBuilder();
+        for (String part : tag.split("\\s+")) {
+            if (part.isEmpty()) continue;
+            String seq = openPart(part, transform);
+            if (seq == null) return null;
+            combined.append(seq);
+        }
+        return combined.length() == 0 ? null : combined.toString();
+    }
+
+    private static String openPart(String part, ColorTransform transform) {
+        switch (part) {
             case "bold":      return "\033[1m";
             case "dim":       return "\033[2m";
             case "italic":    return "\033[3m";
@@ -149,17 +169,16 @@ final class MarkupParser {
             default: break;
         }
 
-        if (tag.equals("link") || tag.startsWith("link ")) {
-            String url = tag.length() > 4 ? tag.substring(5).trim() : "";
-            return "\033]8;;" + url + "\033\\";
+        if (part.startsWith("link=")) {
+            return "\033]8;;" + part.substring(5) + "\033\\";
         }
 
-        if (tag.startsWith("#")) {
-            int[] rgb = parseHex(tag.substring(1));
+        if (part.startsWith("#")) {
+            int[] rgb = parseHex(part.substring(1));
             return rgb == null ? null : transform.toAnsi(rgb[0], rgb[1], rgb[2]);
         }
 
-        int[] rgb = COLORS.get(tag.toLowerCase(Locale.ROOT));
+        int[] rgb = COLORS.get(part.toLowerCase(Locale.ROOT));
         return rgb == null ? null : transform.toAnsi(rgb[0], rgb[1], rgb[2]);
     }
 
