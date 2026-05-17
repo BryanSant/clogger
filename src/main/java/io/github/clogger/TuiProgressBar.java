@@ -3,7 +3,8 @@ package io.github.clogger;
 /**
  * A progress bar helper that renders two formats:
  * <ul>
- *   <li>{@link #toAnsi()} — ANSI-colored bar (cyan fill), ideal for {@code TuiLogAppender} / TTY.</li>
+ *   <li>{@link #toAnsi()} — ANSI-colored bar with a dark-green → light-green
+ *       gradient across the fill, ideal for {@code TuiLogAppender} / TTY.</li>
  *   <li>{@link #toText()} / {@link #toString()} — plain ASCII bar, safe for file appenders.</li>
  * </ul>
  *
@@ -30,15 +31,34 @@ public class TuiProgressBar {
     private static final char FILLED_CHAR = '▰';
     private static final char EMPTY_CHAR  = '▱';
 
-    private static final String CYAN  = "\033[36m";
     private static final String RESET = "\033[0m";
 
+    /** Dark-green endpoint of the fill gradient (left side of the bar). */
+    public static final int[] BAR_RGB_START = {0, 100, 0};
+
+    /** Light-green endpoint of the fill gradient (right side of the bar). */
+    public static final int[] BAR_RGB_END = {144, 238, 144};
+
+    /** Bright-green used for the trailing percent text (e.g. "23%"). */
+    public static final int[] PERCENT_RGB = {0, 255, 0};
+
     /**
-     * Base RGB approximation of the bar's cyan fill. Exposed so an appender
-     * can derive a context-aware variant (e.g. age-based dimming) and feed it
-     * back through {@link #toAnsi(String)}.
+     * Backwards-compatible single-color base — points at the dark-green
+     * gradient start. Empty bar cells and the trailing percent text use this
+     * color so they sit visually behind the gradient fill.
      */
-    public static final int[] BAR_RGB = {60, 200, 220};
+    public static final int[] BAR_RGB = BAR_RGB_START;
+
+    /**
+     * Maps an RGB triple to an ANSI escape. Appenders supply this with
+     * line-level context baked in (age-based dimming, light-background
+     * inversion, {@code NO_COLOR} suppression) so each cell of the gradient
+     * fades the same way the surrounding text does.
+     */
+    @FunctionalInterface
+    public interface RgbColorizer {
+        String escape(int r, int g, int b);
+    }
 
     /**
      * OSC 9;4 escape that hides the terminal/taskbar progress indicator.
@@ -59,6 +79,10 @@ public class TuiProgressBar {
     public TuiProgressBar(int total, int barWidth) {
         this.total = total;
         this.barWidth = barWidth;
+    }
+
+    public int getBarWidth() {
+        return barWidth;
     }
 
     public TuiProgressBar tick() {
@@ -103,17 +127,77 @@ public class TuiProgressBar {
 
     /** ANSI-colored bar — use with {@code TuiLogAppender} / TTY output. */
     public String toAnsi() {
-        return CYAN + toPlainBar() + RESET;
+        return toAnsiGradient((r, g, b) -> "\033[38;2;" + r + ";" + g + ";" + b + "m");
     }
 
     /**
-     * ANSI-colored bar with a caller-supplied color escape (e.g. a dimmed
-     * cyan computed from the line's position in a log buffer). The escape
-     * colors the entire bar body — fill chars, empty chars, and percent —
-     * and is followed by a trailing {@code RESET}.
+     * ANSI-colored bar with a caller-supplied color escape applied uniformly
+     * across the body — fill chars, empty chars, and percent. Retained for
+     * callers that want a single flat color; new code should prefer
+     * {@link #toAnsiGradient(RgbColorizer)} so the fill carries the
+     * dark-green → light-green gradient.
      */
     public String toAnsi(String colorEscape) {
         return colorEscape + toPlainBar() + RESET;
+    }
+
+    /**
+     * ANSI-colored bar with a dark-green → light-green gradient across the
+     * fill. The caller-supplied {@code colorizer} converts each gradient
+     * sample (and the dark-green base used for empty cells and percent text)
+     * into a final ANSI escape, so age-based dimming, light-background
+     * inversion, and {@code NO_COLOR} suppression all run per cell.
+     */
+    public String toAnsiGradient(RgbColorizer colorizer) {
+        return applyGradient(toPlainBar(), barWidth, colorizer);
+    }
+
+    /**
+     * Re-colors a previously captured {@link #toPlainBar()} snapshot with the
+     * same dark→light gradient used by live bars, routing every cell through
+     * {@code colorizer}. Used by the level-grouped appender to keep graduated
+     * bars in lockstep with surrounding lines as they fade.
+     */
+    public static String applyGradient(String plainBar, int barWidth, RgbColorizer colorizer) {
+        int[] start = BAR_RGB_START;
+        int[] end = BAR_RGB_END;
+        StringBuilder out = new StringBuilder(plainBar.length() + 64);
+        String last = "";
+        boolean anyEscape = false;
+        int limit = Math.min(barWidth, plainBar.length());
+        for (int i = 0; i < limit; i++) {
+            char c = plainBar.charAt(i);
+            String esc;
+            if (c == FILLED_CHAR) {
+                double t = barWidth <= 1 ? 0.0 : (double) i / (barWidth - 1);
+                int r = lerp(start[0], end[0], t);
+                int g = lerp(start[1], end[1], t);
+                int b = lerp(start[2], end[2], t);
+                esc = colorizer.escape(r, g, b);
+            } else {
+                esc = colorizer.escape(start[0], start[1], start[2]);
+            }
+            if (!esc.equals(last)) {
+                out.append(esc);
+                last = esc;
+                if (!esc.isEmpty()) anyEscape = true;
+            }
+            out.append(c);
+        }
+        if (limit < plainBar.length()) {
+            String tailEsc = colorizer.escape(PERCENT_RGB[0], PERCENT_RGB[1], PERCENT_RGB[2]);
+            if (!tailEsc.equals(last)) {
+                out.append(tailEsc);
+                if (!tailEsc.isEmpty()) anyEscape = true;
+            }
+            out.append(plainBar, limit, plainBar.length());
+        }
+        if (anyEscape) out.append(RESET);
+        return out.toString();
+    }
+
+    private static int lerp(int a, int b, double t) {
+        return (int) Math.round(a + (b - a) * t);
     }
 
     /**

@@ -31,9 +31,10 @@ import java.util.Locale;
  * fills, the oldest entry is dropped from the top.</p>
  *
  * <p>Each line is prefixed with a single-letter level indicator
- * ({@code T}/{@code D}/{@code I}/{@code W}/{@code E}) followed by a thin
- * vertical bar ({@code │}), both colored by severity — dim gray for TRACE,
- * brown for DEBUG, blue for INFO, yellow for WARN, red for ERROR.</p>
+ * ({@code 𝘛}/{@code 𝘋}/{@code 𝘐}/{@code 𝘞}/{@code 𝘌} — mathematical
+ * sans-serif italic) followed by a heavy right-pointing angle bracket
+ * ({@code ❯}), both colored by severity — dim gray for TRACE, brown for
+ * DEBUG, blue for INFO, yellow for WARN, red for ERROR.</p>
  *
  * <p>A {@link TuiProgressBar} passed as a log argument is anchored to its
  * deque position on first emission. Subsequent log events carrying the same
@@ -49,10 +50,13 @@ import java.util.Locale;
  * long message never wraps onto a second visual row and desyncs the cursor
  * math.</p>
  *
- * <p>Two line formats are available via the {@code <format>} element:</p>
+ * <p>Every line is prefixed with a timestamp formatted via {@code datePattern}
+ * (continuation lines of a throwable entry get equal-width whitespace padding
+ * so the bar stays aligned). Two line formats are available via the
+ * {@code <format>} element:</p>
  * <ul>
- *   <li>{@code COMPACT} (default) — bar prefix followed by the message.</li>
- *   <li>{@code FULL} — bar, timestamp, thread name, level badge, message.</li>
+ *   <li>{@code COMPACT} (default) — timestamp, bar prefix, message.</li>
+ *   <li>{@code FULL} — timestamp, bar prefix, thread name, level badge, message.</li>
  * </ul>
  *
  * <p>Configurable properties (all optional, settable via {@code logback.xml}
@@ -69,7 +73,7 @@ import java.util.Locale;
  *       {@code true}).</li>
  *   <li>{@code <format>COMPACT|FULL</format>} — line format (default
  *       {@code COMPACT}).</li>
- *   <li>{@code <datePattern>} — timestamp format used in {@code FULL} mode
+ *   <li>{@code <datePattern>} — timestamp prefix format
  *       (default {@code HH:mm:ss.SSS}).</li>
  * </ul>
  *
@@ -96,8 +100,8 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     /** Default total entries retained if no XML setter or env-var override is set. */
     private static final int DEFAULT_TOTAL_LINES = 25;
 
-    /** Thin vertical bar prefix — box drawings light vertical (U+2502). */
-    private static final String BAR = "│";
+    /** Bar prefix glyph — heavy right-pointing angle quotation mark ornament (U+276F). */
+    private static final String BAR = "❯";
 
     /** Right arrow used to point at the next class in an exception cause chain. */
     private static final String CAUSE_ARROW = " → ";
@@ -111,7 +115,7 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     private static final double THROWABLE_DIM_FACTOR = 0.7;
 
     /** Minimum brightness multiplier for the oldest visible entry. */
-    private static final double MIN_DIM_FACTOR = 0.25;
+    private static final double MIN_DIM_FACTOR = 0.45;
 
     private static double[] computeDimFactors(int n) {
         double[] factors = new double[n];
@@ -119,8 +123,12 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
             factors[0] = 1.0;
             return factors;
         }
+        // Concave (t²) ramp — newer half stays near full brightness; the fade
+        // concentrates in the oldest entries so most of the buffer remains
+        // easily legible while age is still visually obvious at the top.
         for (int i = 0; i < n; i++) {
-            factors[i] = 1.0 - ((double) i / (n - 1)) * (1.0 - MIN_DIM_FACTOR);
+            double t = (double) i / (n - 1);
+            factors[i] = 1.0 - t * t * (1.0 - MIN_DIM_FACTOR);
         }
         return factors;
     }
@@ -362,6 +370,13 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     private SimpleDateFormat sdf;
 
     /**
+     * Character width of a formatted timestamp (computed once in {@link #start()}
+     * from {@link #datePattern}). Drives the whitespace padding used in front of
+     * continuation lines so the bar column stays aligned with the main line.
+     */
+    private int tsWidth;
+
+    /**
      * Brightness multipliers indexed by position from newest (0) to oldest,
      * linearly interpolated from 1.0 down to {@link #MIN_DIM_FACTOR} across
      * {@link #totalLines} positions. Computed in {@link #start()}.
@@ -392,6 +407,17 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     private boolean cleanedUp = false;
 
     /**
+     * Tracks whether env-var overrides have already been applied to this
+     * instance, so {@link #applyEnvOverrides()} is idempotent. Standalone
+     * callers (like {@code io.github.clogger.Main}) invoke
+     * {@code applyEnvOverrides()} themselves before applying CLI overrides on
+     * top, then call {@link #start()} — which would normally re-apply env
+     * vars and clobber the CLI values. The flag makes the second call a
+     * no-op so CLI &gt; env precedence is preserved.
+     */
+    private boolean envOverridesApplied = false;
+
+    /**
      * The bar whose state currently drives the terminal/taskbar OSC 9;4
      * indicator — set on every {@link #append} that carries a progress bar.
      * Once a bar completes, this reference is kept so the indicator stays at
@@ -408,6 +434,7 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     public void start() {
         applyEnvOverrides();
         sdf = new SimpleDateFormat(datePattern);
+        tsWidth = sdf.format(new Date(0)).length();
         dimFactors = computeDimFactors(totalLines);
         Runtime.getRuntime().addShutdownHook(
                 new Thread(this::cleanup, "TuiLogAppender-shutdown"));
@@ -417,10 +444,15 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     /**
      * Applies {@code CLOGGER_*} environment-variable overrides on top of any
      * XML-configured values. Env vars are the highest-priority configuration
-     * source — values set here win over both Logback XML setters and the
-     * built-in defaults. Called once at the top of {@link #start()}.
+     * source for normal library use — values set here win over both Logback
+     * XML setters and the built-in defaults. Idempotent: subsequent calls
+     * are no-ops, so a standalone caller can invoke this first, then apply
+     * higher-priority CLI overrides via the setters, and {@link #start()}'s
+     * call won't clobber them.
      */
-    private void applyEnvOverrides() {
+    void applyEnvOverrides() {
+        if (envOverridesApplied) return;
+        envOverridesApplied = true;
         EnvConfig.readInt("CLOGGER_LINES", 1).ifPresent(n -> totalLines = n);
         EnvConfig.readString("CLOGGER_ORDER")
                 .ifPresent(s -> order = s.toUpperCase(Locale.ROOT));
@@ -673,24 +705,37 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         String color = rgb(barColor(level), f);
         String message = renderBody(event, color, f);
         String barPart = renderBarVisual(event, f);
-        return color + levelLetter(level) + BAR + " " + barPart + color + message + RESET;
+        return tsPrefix(event, f) + color + "❬" + levelLetter(level) + "❭ " + barPart + color + message + RESET;
     }
 
     private String formatLineFull(ILoggingEvent event, int posFromNewest) {
         double f = dimFactor(posFromNewest);
         Level level = event.getLevel();
-        String ts = sdf.format(new Date(event.getTimeStamp()));
         String th = "[" + event.getThreadName() + "]";
         String color = rgb(barColor(level), f);
         String message = renderBody(event, color, f);
         String barPart = renderBarVisual(event, f);
 
-        return color + levelLetter(level) + BAR + " " + barPart
-                + rgb(META_RGB, f) + ts + " "
+        return tsPrefix(event, f)
+                + color + "❬" + levelLetter(level) + "❭ " + barPart
                 + rgb(META_RGB, f) + th + " "
                 + color + levelBadge(level) + " "
                 + color + message
                 + RESET;
+    }
+
+    /**
+     * Colored timestamp used as the prefix of every main (non-continuation)
+     * rendered line. Immediately followed by the bracketed level marker
+     * ({@code ❬L❭ }).
+     */
+    private String tsPrefix(ILoggingEvent event, double f) {
+        return rgb(META_RGB, f) + sdf.format(new Date(event.getTimeStamp()));
+    }
+
+    /** Whitespace of equal width to {@link #tsPrefix} for continuation lines. */
+    private String tsPadding() {
+        return " ".repeat(tsWidth + 1);
     }
 
     /**
@@ -711,17 +756,17 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         String tMsg = raw.replaceAll("\\s*\\R\\s*", " ");
 
         if ("FULL".equals(format)) {
-            String ts = sdf.format(new Date(event.getTimeStamp()));
             String th = "[" + event.getThreadName() + "]";
-            return mainColor + levelLetter(level) + BAR + " " + barPart
-                    + rgb(META_RGB, f) + ts + " "
+            return tsPrefix(event, f)
+                    + mainColor + "❬" + levelLetter(level) + "❭ " + barPart
                     + rgb(META_RGB, f) + th + " "
                     + mainColor + levelBadge(level) + " "
                     + mainColor + message
                     + dimColor + ": " + tMsg
                     + RESET;
         }
-        return mainColor + levelLetter(level) + BAR + " " + barPart
+        return tsPrefix(event, f)
+                + mainColor + "❬" + levelLetter(level) + "❭ " + barPart
                 + mainColor + message
                 + dimColor + ": " + tMsg
                 + RESET;
@@ -737,7 +782,7 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
         double f = dimFactor(posFromNewest);
         Level level = event.getLevel();
         String color = rgb(barColor(level), f);
-        return color + " " + BAR + " ╰─ " + formatChain(tp) + RESET;
+        return tsPadding() + color + "    ╰─ " + formatChain(tp) + RESET;
     }
 
     private static String formatChain(IThrowableProxy tp) {
@@ -755,11 +800,11 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
     }
 
     private static String levelLetter(Level level) {
-        if (level == Level.TRACE) return "T";
-        if (level == Level.DEBUG) return "D";
-        if (level == Level.INFO)  return "I";
-        if (level == Level.WARN)  return "W";
-        return "E";
+        if (level == Level.TRACE) return "𝘛";
+        if (level == Level.DEBUG) return "𝘋";
+        if (level == Level.INFO)  return "𝘐";
+        if (level == Level.WARN)  return "𝘞";
+        return "𝘌";
     }
 
     private static String levelBadge(Level level) {
@@ -860,12 +905,13 @@ public class TuiLogAppender extends UnsynchronizedAppenderBase<ILoggingEvent> {
      * separator. Returns {@code ""} for non-progress events.
      *
      * <p>Live and completed bars use the same render path: a completed bar's
-     * state is immutable, so {@code bar.toAnsi(...)} produces the same body
-     * every draw — only the dim factor varies as the entry drifts upward.</p>
+     * state is immutable, so {@code bar.toAnsiGradient(...)} produces the same
+     * body every draw — only the dim factor varies as the entry drifts
+     * upward, fading the gradient toward the background.</p>
      */
     private String renderBarVisual(ILoggingEvent event, double dimFactor) {
         TuiProgressBar bar = findProgressBar(event);
         if (bar == null) return "";
-        return bar.toAnsi(rgb(TuiProgressBar.BAR_RGB, dimFactor)) + " ";
+        return bar.toAnsiGradient((r, g, b) -> rgb(new int[]{r, g, b}, dimFactor)) + " ";
     }
 }

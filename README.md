@@ -11,7 +11,7 @@
 
 `TuiLogAppender` (the default) writes directly to `/dev/tty` and uses ANSI escape sequences to erase and rewrite a managed area in place. By default entries appear with the newest at the top and the oldest at the bottom; older entries dim as they age. Once the buffer is full (default 25 lines) the oldest entry rolls off. Both the order and the dimming are configurable — see [Configuration](#configuration) below.
 
-Every line is prefixed with a single-letter level indicator (`T`/`D`/`I`/`W`/`E`) and a thin vertical bar (`│`), both colored by severity:
+Every line is prefixed with a timestamp (formatted via `datePattern`, default `HH:mm:ss.SSS`), then an italic single-letter level indicator (`𝘛`/`𝘋`/`𝘐`/`𝘞`/`𝘌`) and a heavy right-pointing angle bracket (`❯`), both colored by severity:
 
 | Level | Bar color |
 |-------|-----------|
@@ -68,7 +68,7 @@ Both appenders accept the following child elements in `logback.xml`. Every prope
 | `<dim>` | `true` | When `true`, older entries are progressively dimmed; when `false`, every entry renders at full brightness. |
 | `<markup>` | `true` | When `true`, inline `[color]…[/]` and `[bold]…[/]` markup is parsed in messages; when `false`, tags appear verbatim. |
 | `<format>` | `COMPACT` | `COMPACT` or `FULL` (see [Format modes](#format-modes)). |
-| `<datePattern>` | `HH:mm:ss.SSS` | Timestamp pattern used in `FULL` mode. |
+| `<datePattern>` | `HH:mm:ss.SSS` | Timestamp prefix pattern (`SimpleDateFormat`). |
 
 ### `TuiLogLevelAppender` (grouped by severity)
 
@@ -78,7 +78,7 @@ Both appenders accept the following child elements in `logback.xml`. Every prope
 | `<dim>` | `true` | When `true`, older entries within a section are progressively dimmed. |
 | `<markup>` | `true` | When `true`, inline markup tags in messages are parsed. |
 | `<format>` | `COMPACT` | `COMPACT` or `FULL`. |
-| `<datePattern>` | `HH:mm:ss.SSS` | Timestamp pattern used in `FULL` mode. |
+| `<datePattern>` | `HH:mm:ss.SSS` | Timestamp prefix pattern (`SimpleDateFormat`). |
 
 Example with every option set:
 
@@ -114,7 +114,7 @@ CLOGGER_LINES=15 CLOGGER_ORDER=oldest_first CLOGGER_DIM=false ./my-cli-tool
 
 ### `NO_COLOR`
 
-Clogger honors the [`NO_COLOR`](https://no-color.org/) convention. When the `NO_COLOR` environment variable is set to any non-empty value, both appenders suppress every ANSI color escape — level bars, message text, timestamps, progress-bar fills, and inline `[red]…[/]` / `[#ff77ac]…[/]` markup colors all render without color. Per the spec, only color is suppressed: bold, italic, underline, strike, OSC 8 hyperlinks, and the OSC 9;4 taskbar progress indicator still work. The level letter (`T`/`D`/`I`/`W`/`E`) and the `│` bar character remain so each line is still classifiable at a glance. `NO_COLOR` is read once at class load and is independent of the `CLOGGER_*` settings.
+Clogger honors the [`NO_COLOR`](https://no-color.org/) convention. When the `NO_COLOR` environment variable is set to any non-empty value, both appenders suppress every ANSI color escape — level bars, message text, timestamps, progress-bar fills, and inline `[red]…[/]` / `[#ff77ac]…[/]` markup colors all render without color. Per the spec, only color is suppressed: bold, italic, underline, strike, OSC 8 hyperlinks, and the OSC 9;4 taskbar progress indicator still work. The italic level letter (`𝘛`/`𝘋`/`𝘐`/`𝘞`/`𝘌`) and the `❯` bar character remain so each line is still classifiable at a glance. `NO_COLOR` is read once at class load and is independent of the `CLOGGER_*` settings.
 
 ```bash
 NO_COLOR=1 ./my-cli-tool          # no color, styles + structure preserved
@@ -125,20 +125,22 @@ NO_COLOR=1 CLOGGER_MARKUP=false   # additionally disable inline tag parsing enti
 
 Both appenders support two format modes, configured via `<format>` in `logback.xml`:
 
-**COMPACT** (default) — the colored bar and the message only:
+Every line begins with a timestamp prefix in both modes.
+
+**COMPACT** (default) — timestamp, colored bar, and message:
 
 ```
-│ Connected to warehouse: jdbc:postgresql://dwh.prod:5432/analytics
-│ Slow query detected on fact_sales — 4.2 s
-│ Deserialization failure on record 3847
+10:42:31.005 ❯ Connected to warehouse: jdbc:postgresql://dwh.prod:5432/analytics
+10:42:33.210 ❯ Slow query detected on fact_sales — 4.2 s
+10:42:35.887 ❯ Deserialization failure on record 3847
 ```
 
-**FULL** — bar, timestamp, thread, level badge, and message:
+**FULL** — timestamp, colored bar, thread, level badge, and message:
 
 ```
-│ 10:42:31.005 [main]          INFO  Connected to warehouse: jdbc:postgresql://dwh.prod:5432/analytics
-│ 10:42:33.210 [pipeline-pool] WARN  Slow query detected on fact_sales — 4.2 s
-│ 10:42:35.887 [pipeline-pool] ERROR Deserialization failure on record 3847
+10:42:31.005 ❯ [main]          INFO  Connected to warehouse: jdbc:postgresql://dwh.prod:5432/analytics
+10:42:33.210 ❯ [pipeline-pool] WARN  Slow query detected on fact_sales — 4.2 s
+10:42:35.887 ❯ [pipeline-pool] ERROR Deserialization failure on record 3847
 ```
 
 ## When to use Clogger (and when not to)
@@ -273,6 +275,53 @@ Plain text output looks like: `[########--------] 50% (500/1000)`
 
 If you need the ANSI form yourself (e.g. for a custom encoder), call `bar.toAnsi()` explicitly.
 
+## Standalone CLI
+
+Clogger also ships a tiny stdin-driven CLI for re-rendering log streams from tools that already emit Logback's default pattern. Pipe their stdout through `clogger-cli.jar` and you get the in-place TUI experience without changing the upstream tool's logging configuration.
+
+```bash
+./gradlew shadowJar                                # build the fat jar (bundles logback)
+tail -f app.log | java -jar build/libs/clogger-cli.jar
+```
+
+The CLI reads lines from stdin, parses each one against `%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n` (Spring's leading `yyyy-MM-dd` date is also accepted), and feeds synthesized `ILoggingEvent`s into the same `TuiLogAppender` the library exposes — so every formatting feature (markup, dim, NO_COLOR, level coloring, progress-bar anchoring) is available unchanged.
+
+### Multi-line entries
+
+Lines that don't match the entry pattern are treated as continuations of the previous entry. After each line the consumer waits up to **25 ms** for the next; once that window elapses with no new input, the buffered entry flushes.
+
+- **Plain multi-line messages** are joined onto the header with single spaces and rendered as one no-wrap row.
+- **Java stack traces** are detected by the presence of `\tat ` frames or `Caused by:` headers, parsed into an exception chain, and routed through the appender's two-line throwable layout (the continuation line gets equal-width whitespace where the timestamp prefix would sit, so the bar stays aligned):
+
+  ```
+  10:42:35.887 E❯ Deserialization failed: invalid JSON envelope
+                ❯ ╰─ IOException → IllegalStateException
+  ```
+
+  Stack frames themselves are discarded — the chain class names are what the TUI renders.
+
+### Configuration precedence
+
+`defaults < CLOGGER_* env vars < CLI args`. Every property documented in [Configuration](#configuration) has a matching flag:
+
+| Flag | Equivalent |
+|------|------------|
+| `-n N`, `--lines N`, `--total-lines N` | `<totalLines>` / `CLOGGER_LINES` |
+| `--order newest_first\|oldest_first` | `<order>` / `CLOGGER_ORDER` |
+| `--dim [true\|false]` / `--no-dim` | `<dim>` / `CLOGGER_DIM` |
+| `--markup [true\|false]` / `--no-markup` | `<markup>` / `CLOGGER_MARKUP` |
+| `--format compact\|full` | `<format>` / `CLOGGER_FORMAT` |
+| `--date-pattern PATTERN` | `<datePattern>` / `CLOGGER_DATE_PATTERN` |
+| `-h`, `--help` | — |
+
+Example:
+
+```bash
+tail -f app.log | java -jar build/libs/clogger-cli.jar --lines 30 --format full --no-dim
+```
+
+The rendered timestamp prefix uses the appender's `datePattern`, not the timestamp parsed off the input line — so an entry's displayed time is "now" rather than the upstream tool's recorded time. (Set `--date-pattern` to match the input format if you want them to look identical.)
+
 ## Building the project
 
 Requires **Java 25** and the included Gradle wrapper.
@@ -281,6 +330,9 @@ Requires **Java 25** and the included Gradle wrapper.
 # Build the library jar
 ./gradlew clean jar
 
+# Build the standalone CLI fat jar (includes logback)
+./gradlew shadowJar
+
 # Run the unit/simulation tests
 ./gradlew test
 
@@ -288,7 +340,9 @@ Requires **Java 25** and the included Gradle wrapper.
 ./gradlew test --tests "*.TuiLogAppenderSimulationTest" -i
 ```
 
-The built jar is placed at `build/libs/clogger-1.0.0-SNAPSHOT.jar`.
+Outputs:
+- `build/libs/clogger-1.0.0-SNAPSHOT.jar` — library jar (no `Main-Class`, no bundled deps).
+- `build/libs/clogger-cli.jar` — standalone CLI fat jar (`Main-Class` set, logback bundled).
 
 ## Running the demo
 
